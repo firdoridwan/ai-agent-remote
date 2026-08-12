@@ -2,11 +2,13 @@
 
 Android app (Expo + React Native, TypeScript) sebagai remote untuk Local Bridge.
 
-Milestone: **V0.1.2-B.1 — Android WebSocket Connection Client**.
+Milestone: **V0.1.2-B.2 — Wireless LAN Connectivity**.
 
-Milestone ini **read-only**. App hanya connect, menerima, dan menampilkan. App
-tidak pernah mengirim message apa pun ke bridge, jadi tidak bisa mengubah state
-agent.
+App tetap **read-only** seperti V0.1.2-B.1. App hanya connect, menerima, dan
+menampilkan. App tidak pernah mengirim message apa pun ke bridge, jadi tidak
+bisa mengubah state agent.
+
+Koneksi lewat **Wi-Fi / LAN**. Tidak ada USB, `adb reverse`, atau Android Studio.
 
 ## Yang ditampilkan
 
@@ -23,54 +25,70 @@ status koneksinya sendiri.
 
 ## Bridge URL
 
-Tetap, tidak bisa diubah dari UI:
+Dibentuk di `src/config.ts` dari environment variable Expo:
 
 ```text
-ws://127.0.0.1:8787
+ws://${EXPO_PUBLIC_BRIDGE_HOST}:${EXPO_PUBLIC_BRIDGE_PORT}
 ```
 
-Nilainya ada di `src/config.ts`.
+| Variable | Default |
+| --- | --- |
+| `EXPO_PUBLIC_BRIDGE_HOST` | `127.0.0.1` |
+| `EXPO_PUBLIC_BRIDGE_PORT` | `8787` |
+
+Tidak ada IP yang di-hardcode dan tidak ada editor URL di UI. Nilainya
+di-substitusi Metro saat bundling.
+
+> Ini mekanisme **development sementara**. Akan diganti local discovery di
+> milestone berikutnya.
 
 ## Menjalankan
 
-Butuh Node.js dan **Expo Go** terpasang di HP Android. Tidak perlu Android
-Studio.
+Butuh Node.js dan **Expo Go** di HP Android. Tidak perlu Android Studio, tidak
+perlu kabel.
 
-### 1. Sambungkan HP lewat USB
+### 1. HP dan laptop di Wi-Fi yang sama
 
-Butuh `adb` (Android platform-tools). Kalau belum ada:
+Wi-Fi dengan client isolation (umum di jaringan publik) akan memblokir koneksi
+ini.
 
-```bash
-brew install --cask android-platform-tools
-```
-
-Aktifkan USB debugging di HP, lalu:
+### 2. Cari IP LAN laptop
 
 ```bash
-adb devices                        # pastikan HP terdeteksi
-adb reverse tcp:8787 tcp:8787      # bridge
-adb reverse tcp:8081 tcp:8081      # Metro (Expo)
+ipconfig getifaddr en0     # macOS, Wi-Fi
+hostname -I                # Linux
+ipconfig                   # Windows
 ```
 
-`adb reverse` membuat `127.0.0.1:8787` di HP diteruskan ke laptop lewat USB.
-Bridge tetap bind ke loopback — tidak ada yang terbuka ke jaringan.
+Misalnya hasilnya `192.168.1.42`.
 
-### 2. Jalankan bridge
+### 3. Jalankan bridge dalam LAN mode
 
 ```bash
 cd bridge
-npm run dev
+BRIDGE_HOST=0.0.0.0 npm run dev
 ```
 
-### 3. Jalankan app
+Tanpa `BRIDGE_HOST=0.0.0.0`, bridge hanya mendengar di loopback dan HP tidak
+akan bisa connect.
+
+### 4. Jalankan app dengan IP laptop
 
 ```bash
 cd mobile
 npm install
-npm start
+EXPO_PUBLIC_BRIDGE_HOST=192.168.1.42 npm start
 ```
 
-Tekan `a` untuk membuka di Expo Go, atau scan QR-nya.
+Scan QR-nya dengan Expo Go.
+
+## Peringatan
+
+> **LAN mode is development-only and currently unauthenticated.**
+> **Do not expose the bridge port to the public internet.**
+
+Siapa pun di jaringan lokal yang tahu alamat dan port bisa connect dan membaca
+state agent. Belum ada authentication, pairing, atau enkripsi.
 
 ## Scripts
 

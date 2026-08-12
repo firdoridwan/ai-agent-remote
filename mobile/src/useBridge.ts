@@ -73,7 +73,10 @@ export function useBridge(): Bridge {
 
     socket.onerror = () => {
       // RN tidak memberi detail error yang berguna di sini.
-      append("error", "Connection error. Bridge jalan? adb reverse aktif?");
+      append(
+        "error",
+        "Connection error. Bridge jalan dengan BRIDGE_HOST=0.0.0.0? Wi-Fi sama?",
+      );
     };
 
     socket.onclose = () => {

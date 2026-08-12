@@ -37,7 +37,7 @@ export function startBridge({
   const agent = new FakeAgent(broadcast);
 
   server.on("error", (error: Error) => {
-    console.error(`[bridge] server error: ${error.message}`);
+    console.error(`[bridge] server error on ${host}:${port} — ${error.message}`);
   });
 
   server.on("connection", (socket: WebSocket) => {

@@ -34,6 +34,7 @@ ai-agent-remote/
 ├── bridge/                  # Local bridge (Node.js + TypeScript)
 │   ├── src/
 │   │   ├── index.ts         # Entry point
+│   │   ├── config.ts        # BRIDGE_HOST / BRIDGE_PORT
 │   │   ├── bridge.ts        # WebSocket server + broadcast
 │   │   ├── protocol.ts      # Tipe envelope/state + parsing/validasi
 │   │   ├── fake-agent.ts    # Simulasi agent (state + approval flow)
@@ -76,6 +77,9 @@ Status: running
 WebSocket: ws://127.0.0.1:8787
 ```
 
+Default-nya loopback. Untuk agar HP bisa menjangkaunya lewat Wi-Fi, lihat
+[V0.1.2-B.2](#v012-b2--wireless-lan-connectivity).
+
 ### Script yang tersedia
 
 | Command | Keterangan |
@@ -83,7 +87,7 @@ WebSocket: ws://127.0.0.1:8787
 | `npm run dev` | Jalankan bridge dari source dengan auto-reload (tsx watch) |
 | `npm start` | Jalankan bridge sekali dari source, tanpa watch |
 | `npm run client` | Jalankan test client (butuh bridge yang sudah jalan) |
-| `npm test` | Test state & reconnect (start bridge sendiri di port 8788) |
+| `npm test` | Test config + state & reconnect (start bridge sendiri di port 8788) |
 | `npm run build` | Compile TypeScript ke `dist/` |
 | `npm run serve` | Jalankan hasil build (`node dist/index.js`) |
 | `npm run typecheck` | Type check tanpa emit |
@@ -337,23 +341,8 @@ Milestone ini **read-only**: app hanya menerima dan menampilkan. App tidak
 mengirim message apa pun, jadi tidak bisa mengubah state agent. Approval tetap
 dijawab lewat test client di laptop.
 
-```text
-HP Android (Expo Go)
-        │  ws://127.0.0.1:8787
-        ▼
-   adb reverse (USB)
-        │
-        ▼
-Laptop 127.0.0.1:8787
-        │
-        ▼
-   Local Bridge ─── Fake Agent
-```
-
-`adb reverse` dipilih daripada `10.0.2.2` (emulator) atau LAN, karena bridge
-tetap bind ke loopback — tidak ada port yang terbuka ke jaringan.
-
-Detail lengkap, termasuk cara menjalankan: [`mobile/README.md`](mobile/README.md).
+Cara HP menjangkau bridge dibahas di V0.1.2-B.2 di bawah. Detail app:
+[`mobile/README.md`](mobile/README.md).
 
 ### Yang bisa dilakukan app
 
@@ -364,22 +353,137 @@ Detail lengkap, termasuk cara menjalankan: [`mobile/README.md`](mobile/README.md
 - Membuka app di tengah approval yang sudah `PENDING` dan tetap melihat approval
   itu, karena tampilannya dibangun dari `state_snapshot`, bukan dari event
   `approval_request` yang mungkin sudah lewat.
-- Connect / Disconnect manual. Bridge URL tetap `ws://127.0.0.1:8787`, tidak
-  bisa diubah dari UI.
+- Connect / Disconnect manual. Bridge URL tidak bisa diubah dari UI.
+
+---
+
+## V0.1.2-B.2 — Wireless LAN Connectivity
+
+Arah connectivity jadi **wireless-first**. Tidak ada USB, `adb reverse`, atau
+Android Studio.
+
+```text
+📱 AI Agent Remote
+       │
+       │ Wi-Fi / LAN
+       ▼
+💻 Agent Bridge
+       │
+       ▼
+🤖 Coding Agent
+```
+
+### Security boundary
+
+| Host | Artinya |
+| --- | --- |
+| `127.0.0.1` (default) | Hanya bisa dihubungi dari laptop itu sendiri. Aman. |
+| `0.0.0.0` | Bisa dihubungi dari interface jaringan mana pun yang tersedia — termasuk perangkat lain di Wi-Fi yang sama. |
+
+`0.0.0.0` **bukan** default dan harus diminta secara eksplisit.
+
+> **LAN mode is development-only and currently unauthenticated.**
+> **Do not expose the bridge port to the public internet.**
+
+Siapa pun di jaringan lokal yang tahu alamat dan port bisa connect dan membaca
+state agent. Belum ada authentication, pairing, atau enkripsi — itu milestone
+tersendiri. Jangan port-forward, jangan taruh di belakang tunnel publik.
+
+### Bridge: host & port dari environment
+
+| Variable | Default | Keterangan |
+| --- | --- | --- |
+| `BRIDGE_HOST` | `127.0.0.1` | Alamat bind |
+| `BRIDGE_PORT` | `8787` | TCP port, 1–65535 |
+
+Nilai yang tidak valid tidak membuat bridge mati — bridge memberi peringatan
+lalu memakai default yang aman.
+
+Default (loopback):
+
+```bash
+cd bridge
+npm run dev
+```
+
+LAN mode:
+
+```bash
+cd bridge
+BRIDGE_HOST=0.0.0.0 BRIDGE_PORT=8787 npm run dev
+```
+
+Outputnya jelas menandai keadaan ini:
+
+```text
+AI Agent Remote Bridge
+Status: running
+WebSocket: ws://0.0.0.0:8787
+[bridge] Listening di 0.0.0.0: bridge bisa dihubungi dari jaringan lokal.
+[bridge] LAN mode is development-only and currently unauthenticated.
+[bridge] Do not expose the bridge port to the public internet.
+```
+
+### Mencari IP LAN laptop
+
+macOS:
+
+```bash
+ipconfig getifaddr en0            # Wi-Fi
+route -n get default | grep interface   # kalau bukan en0
+```
+
+Linux:
+
+```bash
+hostname -I
+```
+
+Windows:
+
+```powershell
+ipconfig
+```
+
+### Android: mengarahkan app ke IP laptop
+
+Tidak ada IP yang di-hardcode dan tidak ada editor URL di UI. Host diberikan
+lewat environment variable Expo saat menjalankan dev server:
+
+```bash
+cd mobile
+EXPO_PUBLIC_BRIDGE_HOST=192.168.1.42 npm start
+```
+
+Ganti dengan IP laptop Anda sendiri. `EXPO_PUBLIC_BRIDGE_PORT` juga tersedia dan
+default-nya `8787`. Tanpa env var, app menembak `127.0.0.1` — berguna untuk
+`npm run web` di laptop, tapi tidak akan berhasil dari HP.
+
+Ini **sementara**. Mekanismenya akan diganti local discovery di milestone
+berikutnya, jadi jangan diperlakukan sebagai arsitektur final.
+
+### Syarat
+
+- HP dan laptop harus di **jaringan lokal yang sama**.
+- Wi-Fi dengan client isolation (umum di jaringan publik/hotel) akan memblokir
+  koneksi ini.
+- Firewall laptop harus mengizinkan koneksi masuk ke port tersebut.
 
 ### Status verifikasi
 
 | Verifikasi | Hasil |
 | --- | --- |
-| mobile typecheck (tipe Expo/RN asli) | ✅ |
-| `npx expo export --platform android` (bundling Metro) | ✅ 581 modules |
-| `npm run smoke` (protocol app vs bridge asli, read-only) | ✅ |
-| Bridge typecheck / build / 8 test | ✅ tidak ada regresi |
-| Dijalankan di HP Android sungguhan | ❌ belum — perlu `adb` + device |
+| bridge typecheck / build | ✅ |
+| bridge tests (config + state, 8 skenario) | ✅ tidak ada regresi |
+| Default tetap loopback-only (LAN ditolak) | ✅ diuji |
+| LAN mode bind `*:8787` + warning tampil | ✅ diuji |
+| Test A–E lewat alamat LAN laptop | ✅ diuji dengan client Node |
+| mobile typecheck | ✅ |
+| `EXPO_PUBLIC_BRIDGE_HOST` ter-inline ke bundle Android | ✅ diuji |
+| **Test A–E dari HP Android fisik** | ❌ **belum** |
 
-Mesin development ini belum punya Android SDK/`adb`, jadi app belum pernah
-benar-benar dirender di perangkat. Yang sudah terbukti: kodenya type-safe,
-bisa di-bundle untuk Android, dan modul protokolnya berhasil membaca event
-bridge asli sampai approval `PENDING` tanpa pernah mengirim apa pun kembali.
+Belum ada perangkat Android untuk diuji. Test A–E dijalankan dengan client Node
+yang connect ke `ws://<IP-LAN-laptop>:8787` — itu membuktikan bridge menerima
+koneksi lewat alamat LAN, bukan membuktikan HP sungguhan bisa menembus jaringan.
 
-Langkah berikutnya: test di HP Android fisik lewat `adb reverse`.
+Langkah berikutnya: test dari HP Android fisik di Wi-Fi yang sama.
