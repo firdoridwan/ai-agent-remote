@@ -42,7 +42,14 @@ ai-agent-remote/
 │   ├── package.json
 │   └── tsconfig.json
 │
-├── mobile/                  # Placeholder Android app
+├── mobile/                  # Android app (Expo + React Native)
+│   ├── App.tsx              # UI read-only
+│   ├── src/
+│   │   ├── config.ts        # Bridge URL tetap
+│   │   ├── protocol.ts      # Protocol parsing (duplikat dari bridge)
+│   │   ├── useBridge.ts     # Koneksi WebSocket + state
+│   │   └── protocol.smoke.ts# Smoke test lawan bridge asli
+│   └── app.json
 │
 ├── protocol/                # Spec message/event protocol
 │   └── README.md
@@ -318,3 +325,61 @@ memeriksa delapan behavior:
   diamati. Ini durasi kerja, bukan timeout approval — approval tidak punya timeout.
 - State hanya in-memory. Bridge mati = state hilang. Persistence menunggu
   integrasi agent sungguhan.
+
+---
+
+## V0.1.2-B.1 — Android WebSocket Connection Client
+
+HP Android bisa connect ke bridge dan menampilkan state agent. Stack:
+**Expo + React Native (TypeScript)**.
+
+Milestone ini **read-only**: app hanya menerima dan menampilkan. App tidak
+mengirim message apa pun, jadi tidak bisa mengubah state agent. Approval tetap
+dijawab lewat test client di laptop.
+
+```text
+HP Android (Expo Go)
+        │  ws://127.0.0.1:8787
+        ▼
+   adb reverse (USB)
+        │
+        ▼
+Laptop 127.0.0.1:8787
+        │
+        ▼
+   Local Bridge ─── Fake Agent
+```
+
+`adb reverse` dipilih daripada `10.0.2.2` (emulator) atau LAN, karena bridge
+tetap bind ke loopback — tidak ada port yang terbuka ke jaringan.
+
+Detail lengkap, termasuk cara menjalankan: [`mobile/README.md`](mobile/README.md).
+
+### Yang bisa dilakukan app
+
+- Menampilkan connection state, agent state, dan approval state.
+- Menampilkan log `agent_output` dan `error`.
+- Menampilkan panel **Approval / Pending** beserta pesannya saat agent menunggu
+  — read-only, tanpa tombol.
+- Membuka app di tengah approval yang sudah `PENDING` dan tetap melihat approval
+  itu, karena tampilannya dibangun dari `state_snapshot`, bukan dari event
+  `approval_request` yang mungkin sudah lewat.
+- Connect / Disconnect manual. Bridge URL tetap `ws://127.0.0.1:8787`, tidak
+  bisa diubah dari UI.
+
+### Status verifikasi
+
+| Verifikasi | Hasil |
+| --- | --- |
+| mobile typecheck (tipe Expo/RN asli) | ✅ |
+| `npx expo export --platform android` (bundling Metro) | ✅ 581 modules |
+| `npm run smoke` (protocol app vs bridge asli, read-only) | ✅ |
+| Bridge typecheck / build / 8 test | ✅ tidak ada regresi |
+| Dijalankan di HP Android sungguhan | ❌ belum — perlu `adb` + device |
+
+Mesin development ini belum punya Android SDK/`adb`, jadi app belum pernah
+benar-benar dirender di perangkat. Yang sudah terbukti: kodenya type-safe,
+bisa di-bundle untuk Android, dan modul protokolnya berhasil membaca event
+bridge asli sampai approval `PENDING` tanpa pernah mengirim apa pun kembali.
+
+Langkah berikutnya: test di HP Android fisik lewat `adb reverse`.

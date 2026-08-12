@@ -1,0 +1,9 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    // src/protocol.smoke.ts dijalankan langsung oleh Node, yang butuh
+    // extension eksplisit pada import.
+    "allowImportingTsExtensions": true
+  }
+}
