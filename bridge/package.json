@@ -1,0 +1,20 @@
+{
+  "name": "ai-agent-remote-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local bridge between the AI Agent Remote Android app and terminal processes",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "serve": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
