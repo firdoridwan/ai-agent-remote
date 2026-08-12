@@ -1,6 +1,9 @@
 /**
- * Test client untuk membuktikan flow V0.1.1 dari terminal.
+ * Test client untuk membuktikan flow dari terminal.
  * Nanti peran client ini digantikan Android app.
+ *
+ * Client bukan source of truth: semua yang ditampilkan berasal dari event dan
+ * state_snapshot milik bridge. Yang dipegang client hanya connection state.
  */
 
 import { createInterface } from "node:readline";
@@ -11,22 +14,33 @@ import {
   createEvent,
   parseMessage,
   type AgentOutputPayload,
+  type AgentState,
   type ApprovalRequestPayload,
   type ApprovalResponsePayload,
+  type ConnectionState,
   type Envelope,
   type ErrorPayload,
 } from "./protocol.js";
 
 const URL = "ws://127.0.0.1:8787";
 
-const socket = new WebSocket(URL);
+let connectionState: ConnectionState = "CONNECTING";
 
-// Sudah menjawab approval -> agent_output berikutnya adalah yang terakhir.
+// Approval yang sudah pernah di-prompt, supaya approval_request dan
+// state_snapshot untuk request yang sama tidak menanya dua kali.
+let promptedRequestId: string | null = null;
 let answered = false;
 
 console.log("AI Agent Remote Test Client\n");
 
+const socket = new WebSocket(URL);
+
+socket.on("open", () => {
+  connectionState = "CONNECTED";
+});
+
 socket.on("error", (error: Error) => {
+  connectionState = "DISCONNECTED";
   console.error(`Connection failed: ${error.message}`);
   console.error("Pastikan bridge sudah jalan (npm run dev).");
   closeInput();
@@ -34,6 +48,7 @@ socket.on("error", (error: Error) => {
 });
 
 socket.on("close", () => {
+  connectionState = "DISCONNECTED";
   closeInput();
 });
 
@@ -55,19 +70,24 @@ async function handleMessage(raw: string): Promise<void> {
 
   switch (event.type) {
     case "connection":
-      console.log("Connected.\n");
+      console.log(`Connected. (${connectionState})\n`);
+      break;
+
+    case "state_snapshot":
+      await handleSnapshot(event.payload as AgentState);
       break;
 
     case "agent_output": {
       const { text } = event.payload as AgentOutputPayload;
       console.log(`🤖 Agent:\n${text}\n`);
-      if (answered) socket.close();
       break;
     }
 
-    case "approval_request":
-      await promptApproval(event as Envelope<ApprovalRequestPayload>);
+    case "approval_request": {
+      const { message, options } = event.payload as ApprovalRequestPayload;
+      await promptApproval(event.id, message, options);
       break;
+    }
 
     case "error": {
       const { message } = event.payload as ErrorPayload;
@@ -80,10 +100,38 @@ async function handleMessage(raw: string): Promise<void> {
   }
 }
 
+async function handleSnapshot(state: AgentState): Promise<void> {
+  console.log(
+    `[state] agent: ${state.agentState} | approval: ${state.approval.status}`,
+  );
+
+  // Reconnect ke approval yang masih menunggu: prompt-nya datang dari snapshot,
+  // karena approval_request-nya sudah lewat sebelum client ini connect.
+  const { status, requestId, message, options } = state.approval;
+  if (status === "PENDING" && requestId) {
+    await promptApproval(
+      requestId,
+      message ?? "Approval required.",
+      options ?? ["yes", "no"],
+    );
+    return;
+  }
+
+  // Selesai: agent kembali IDLE setelah jawaban kita diproses.
+  if (answered && state.agentState === "IDLE" && status !== "PENDING") {
+    socket.close();
+  }
+}
+
 async function promptApproval(
-  request: Envelope<ApprovalRequestPayload>,
+  requestId: string,
+  message: string,
+  options: string[],
 ): Promise<void> {
-  console.log(`${request.payload.message}\n[y] Yes\n[n] No\n`);
+  if (promptedRequestId === requestId) return;
+  promptedRequestId = requestId;
+
+  console.log(`\n${message}\n[${options[0]?.[0] ?? "y"}] Yes\n[${options[1]?.[0] ?? "n"}] No\n`);
 
   const approved = await askYesNo();
   if (approved === null) {
@@ -101,7 +149,7 @@ async function promptApproval(
     JSON.stringify(
       createEvent<ApprovalResponsePayload>(
         "approval_response",
-        { requestId: request.id, approved },
+        { requestId, approved },
         "res",
       ),
     ),

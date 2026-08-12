@@ -9,6 +9,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "client": "tsx src/client.ts",
+    "test": "tsx src/state.test.ts",
     "build": "tsc",
     "serve": "node dist/index.js",
     "typecheck": "tsc --noEmit"

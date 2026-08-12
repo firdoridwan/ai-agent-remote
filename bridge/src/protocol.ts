@@ -4,6 +4,7 @@
 
 export const EVENT_TYPES = [
   "connection",
+  "state_snapshot",
   "agent_output",
   "approval_request",
   "approval_response",
@@ -22,6 +23,29 @@ export interface Envelope<TPayload = unknown> {
 export interface ConnectionPayload {
   status: "connected";
 }
+
+/** State koneksi adalah state lokal client, bukan milik bridge. */
+export type ConnectionState = "DISCONNECTED" | "CONNECTING" | "CONNECTED";
+
+export type AgentLifecycle = "IDLE" | "WORKING" | "WAITING_APPROVAL";
+
+export type ApprovalStatus = "NONE" | "PENDING" | "APPROVED" | "DENIED";
+
+export interface ApprovalState {
+  status: ApprovalStatus;
+  requestId?: string;
+  message?: string;
+  options?: string[];
+}
+
+/** Source of truth-nya ada di bridge; client hanya menampilkan salinan ini. */
+export interface AgentState {
+  agentId: string;
+  agentState: AgentLifecycle;
+  approval: ApprovalState;
+}
+
+export type StateSnapshotPayload = AgentState;
 
 export interface AgentOutputPayload {
   text: string;

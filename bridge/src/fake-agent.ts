@@ -1,50 +1,76 @@
 /**
- * Simulasi agent untuk membuktikan approval flow. Belum ada Claude Code / proses
- * terminal sungguhan di sini.
+ * Simulasi agent untuk membuktikan approval flow + state management.
+ * Belum ada Claude Code / proses terminal sungguhan di sini.
  *
- * Yang penting: setelah mengirim approval_request, agent benar-benar berhenti
- * sampai approval_response yang cocok diterima.
+ * Dua sifat yang wajib dipertahankan:
+ * 1. Setelah mengirim approval_request, agent benar-benar berhenti sampai
+ *    approval_response yang cocok diterima. Tidak ada timeout, tidak ada
+ *    auto approve/deny.
+ * 2. Agent hidup di level bridge, bukan per koneksi. Client disconnect tidak
+ *    mengubah state agent sama sekali.
  */
+
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   createEvent,
   type AgentOutputPayload,
+  type AgentState,
   type ApprovalRequestPayload,
   type ApprovalResponsePayload,
   type Envelope,
+  type StateSnapshotPayload,
 } from "./protocol.js";
 
-type Send = (event: Envelope) => void;
+const AGENT_ID = "fake-agent";
+
+/** Durasi kerja simulasi, supaya state WORKING bisa diamati. Bukan timeout approval. */
+const WORK_DURATION_MS = 2000;
+
+type Emit = (event: Envelope) => void;
 
 interface PendingApproval {
   requestId: string;
   resolve: (approved: boolean) => void;
-  reject: (reason: Error) => void;
 }
 
 export class FakeAgent {
+  private readonly state: AgentState = {
+    agentId: AGENT_ID,
+    agentState: "IDLE",
+    approval: { status: "NONE" },
+  };
+
   private pending: PendingApproval | null = null;
+  private started = false;
 
-  constructor(private readonly send: Send) {}
+  constructor(private readonly emit: Emit) {}
 
-  async run(): Promise<void> {
-    this.output("I need permission to continue.");
+  /** Salinan state, supaya pemanggil tidak bisa memutasi source of truth. */
+  getState(): AgentState {
+    return { ...this.state, approval: { ...this.state.approval } };
+  }
 
-    const approved = await this.requestApproval("Approval required.", [
-      "yes",
-      "no",
-    ]);
-
-    this.output(
-      approved
-        ? "Approval received. Continuing..."
-        : "Approval denied. Stopping...",
+  snapshotEvent(): Envelope<StateSnapshotPayload> {
+    return createEvent<StateSnapshotPayload>(
+      "state_snapshot",
+      this.getState(),
+      "state",
     );
   }
 
+  /** Idempotent: agent jalan sekali per proses bridge, reconnect tidak me-restart. */
+  start(): void {
+    if (this.started) return;
+    this.started = true;
+    void this.run().catch((error: Error) => {
+      console.error(`[agent] stopped: ${error.message}`);
+    });
+  }
+
   /**
-   * Dipanggil saat approval_response masuk. Mengembalikan error string kalau
-   * response-nya tidak cocok dengan request yang sedang menunggu.
+   * Dipanggil saat approval_response masuk, dari socket mana pun. Response yang
+   * tidak cocok tidak mengubah state sedikit pun.
    */
   handleApprovalResponse(
     event: Envelope<ApprovalResponsePayload>,
@@ -61,34 +87,79 @@ export class FakeAgent {
 
     const { resolve } = this.pending;
     this.pending = null;
-    resolve(event.payload.approved);
+    const approved = event.payload.approved;
+
+    // State dulu, baru event, supaya snapshot tidak pernah stale.
+    if (approved) {
+      this.state.approval.status = "APPROVED";
+      this.state.agentState = "WORKING";
+    } else {
+      this.state.approval.status = "DENIED";
+      this.state.agentState = "IDLE";
+    }
+    this.emitState();
+
+    resolve(approved);
     return { ok: true };
   }
 
-  /** Batalkan agent saat client disconnect, supaya promise tidak menggantung. */
-  cancel(): void {
-    const pending = this.pending;
-    this.pending = null;
-    pending?.reject(new Error("client disconnected"));
-  }
+  private async run(): Promise<void> {
+    this.setAgentState("WORKING");
+    await delay(WORK_DURATION_MS);
 
-  private output(text: string): void {
-    this.send(createEvent<AgentOutputPayload>("agent_output", { text }));
+    this.output("I need permission to continue.");
+    const approved = await this.requestApproval("Approval required.", [
+      "yes",
+      "no",
+    ]);
+
+    if (!approved) {
+      // State sudah DENIED + IDLE saat response diproses.
+      this.output("Approval denied. Stopping...");
+      return;
+    }
+
+    this.output("Approval received. Continuing...");
+    await delay(WORK_DURATION_MS);
+    this.setAgentState("IDLE");
   }
 
   private requestApproval(
     message: string,
     options: string[],
   ): Promise<boolean> {
-    const event = createEvent<ApprovalRequestPayload>(
+    const request = createEvent<ApprovalRequestPayload>(
       "approval_request",
       { message, options },
       "req",
     );
 
-    return new Promise<boolean>((resolve, reject) => {
-      this.pending = { requestId: event.id, resolve, reject };
-      this.send(event);
+    return new Promise<boolean>((resolve) => {
+      this.pending = { requestId: request.id, resolve };
+
+      this.state.agentState = "WAITING_APPROVAL";
+      this.state.approval = {
+        status: "PENDING",
+        requestId: request.id,
+        message,
+        options,
+      };
+      this.emitState();
+
+      this.emit(request);
     });
+  }
+
+  private setAgentState(next: AgentState["agentState"]): void {
+    this.state.agentState = next;
+    this.emitState();
+  }
+
+  private output(text: string): void {
+    this.emit(createEvent<AgentOutputPayload>("agent_output", { text }));
+  }
+
+  private emitState(): void {
+    this.emit(this.snapshotEvent());
   }
 }

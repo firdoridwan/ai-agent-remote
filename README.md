@@ -33,10 +33,12 @@ skeleton project yang bersih dan bisa dijalankan.
 ai-agent-remote/
 ├── bridge/                  # Local bridge (Node.js + TypeScript)
 │   ├── src/
-│   │   ├── index.ts         # Entry point + WebSocket server
-│   │   ├── protocol.ts      # Tipe envelope + parsing/validasi
-│   │   ├── fake-agent.ts    # Simulasi agent (approval flow)
-│   │   └── client.ts        # Test client terminal
+│   │   ├── index.ts         # Entry point
+│   │   ├── bridge.ts        # WebSocket server + broadcast
+│   │   ├── protocol.ts      # Tipe envelope/state + parsing/validasi
+│   │   ├── fake-agent.ts    # Simulasi agent (state + approval flow)
+│   │   ├── client.ts        # Test client terminal
+│   │   └── state.test.ts    # Test state & reconnect
 │   ├── package.json
 │   └── tsconfig.json
 │
@@ -74,6 +76,7 @@ WebSocket: ws://127.0.0.1:8787
 | `npm run dev` | Jalankan bridge dari source dengan auto-reload (tsx watch) |
 | `npm start` | Jalankan bridge sekali dari source, tanpa watch |
 | `npm run client` | Jalankan test client (butuh bridge yang sudah jalan) |
+| `npm test` | Test state & reconnect (start bridge sendiri di port 8788) |
 | `npm run build` | Compile TypeScript ke `dist/` |
 | `npm run serve` | Jalankan hasil build (`node dist/index.js`) |
 | `npm run typecheck` | Type check tanpa emit |
@@ -150,10 +153,14 @@ Jawab `y`:
 ```text
 AI Agent Remote Test Client
 
-Connected.
+Connected. (CONNECTED)
 
+[state] agent: IDLE | approval: NONE
+[state] agent: WORKING | approval: NONE
 🤖 Agent:
 I need permission to continue.
+
+[state] agent: WAITING_APPROVAL | approval: PENDING
 
 Approval required.
 [y] Yes
@@ -163,8 +170,11 @@ Approval required.
 
 → Sending approval...
 
+[state] agent: WORKING | approval: APPROVED
 🤖 Agent:
 Approval received. Continuing...
+
+[state] agent: IDLE | approval: APPROVED
 ```
 
 Jawab `n`:
@@ -174,9 +184,12 @@ Jawab `n`:
 
 → Sending denial...
 
+[state] agent: IDLE | approval: DENIED
 🤖 Agent:
 Approval denied. Stopping...
 ```
+
+Baris `[state]` berasal dari event `state_snapshot` yang ditambahkan di V0.1.2-A.
 
 Selama menunggu, agent tidak mengirim apa pun dan tidak punya timeout — flow
 hanya lanjut setelah `approval_response` dengan `requestId` yang cocok diterima.
@@ -192,3 +205,116 @@ node -e 'const W=require("ws");const s=new W("ws://127.0.0.1:8787");s.on("open",
 
 Bridge membalas `{"type":"error","payload":{"message":"invalid JSON"}}` dan tetap
 running.
+
+---
+
+## V0.1.2-A — Bridge State & Reconnect
+
+Bridge menjadi **source of truth** untuk state agent. Client hanya menampilkan
+salinan state; ia tidak menyimpan kebenaran apa pun selain status koneksinya
+sendiri.
+
+```text
+Client A ─┐
+          ├── Bridge ─── Fake Agent   (state ada di sini)
+Client B ─┘
+```
+
+### State model
+
+| Agent state | Arti |
+| --- | --- |
+| `IDLE` | Tidak sedang mengerjakan apa pun |
+| `WORKING` | Sedang bekerja |
+| `WAITING_APPROVAL` | Berhenti, menunggu jawaban user |
+
+| Approval state | Arti |
+| --- | --- |
+| `NONE` | Belum pernah ada approval request |
+| `PENDING` | Ada request yang menunggu jawaban |
+| `APPROVED` / `DENIED` | Hasil request terakhir |
+
+Connection state (`DISCONNECTED` / `CONNECTING` / `CONNECTED`) adalah state lokal
+client dan tidak pernah dikirim ke bridge.
+
+### Event baru: `state_snapshot`
+
+```json
+{
+  "type": "state_snapshot",
+  "id": "state-2",
+  "timestamp": "2026-08-12T10:00:00.001Z",
+  "payload": {
+    "agentId": "fake-agent",
+    "agentState": "WAITING_APPROVAL",
+    "approval": {
+      "status": "PENDING",
+      "requestId": "req-7",
+      "message": "Approval required.",
+      "options": ["yes", "no"]
+    }
+  }
+}
+```
+
+Dikirim saat client connect (selalu tepat setelah `connection`) dan setiap kali
+state berubah — di-broadcast ke semua client. Envelope event lama tidak berubah.
+
+### Reconnect
+
+Disconnect adalah urusan client, bukan agent. Bridge hanya membuang socket-nya.
+
+| Saat disconnect | Setelah reconnect |
+| --- | --- |
+| Agent `WORKING` | tetap `WORKING`, tidak jatuh ke `IDLE` |
+| Approval `PENDING` | tetap `PENDING` dengan `requestId` yang sama |
+
+Kalau semua client putus saat approval `PENDING`, agent **tetap menunggu** — tidak
+ada auto approve, auto deny, timeout, atau cancel. Client yang reconnect membaca
+`requestId` dari snapshot lalu menjawab seperti biasa.
+
+Coba sendiri dengan dua terminal client berurutan:
+
+```bash
+# terminal 1
+cd bridge && npm run dev
+
+# terminal 2 — connect lalu pergi tanpa menjawab
+cd bridge && npm run client < /dev/null
+
+# terminal 2 — reconnect, approval-nya masih menunggu
+cd bridge && npm run client
+```
+
+Client kedua langsung melihat prompt approval walaupun event `approval_request`
+sudah lewat sebelum ia connect, karena promptnya dibangun dari snapshot.
+
+### Test
+
+```bash
+cd bridge
+npm test
+```
+
+Test menyalakan bridge sendiri di port 8788 (tidak bentrok dengan 8787) dan
+memeriksa delapan behavior:
+
+| # | Behavior |
+| --- | --- |
+| 1 | Urutan saat connect: `connection` lalu `state_snapshot` (IDLE/NONE) |
+| 2 | Disconnect saat `WORKING` → reconnect tetap `WORKING` |
+| 3 | Disconnect saat `PENDING` → agent tetap menunggu, tanpa event apa pun |
+| 4 | Reconnect melihat approval `PENDING` beserta `requestId` |
+| 5 | Approval valid dari client yang reconnect → agent lanjut |
+| 6 | `requestId` salah → `error`, state tidak berubah |
+| 7 | Perubahan state di-broadcast ke dua client sekaligus |
+| 8 | Disconnect tidak mengubah state agent, agent tidak restart |
+
+### Catatan
+
+- Agent jalan **sekali per proses bridge**, dipicu client pertama yang connect.
+  Reconnect tidak pernah me-restart agent. Restart bridge untuk mengulang skenario.
+- Fake Agent memakai jeda kerja simulasi 2 detik supaya state `WORKING` bisa
+  diamati. Ini durasi kerja, bukan timeout approval — approval tidak punya timeout.
+- State hanya in-memory. Bridge mati = state hilang. Persistence menunggu
+  integrasi agent sungguhan.
