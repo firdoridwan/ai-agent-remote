@@ -1,6 +1,90 @@
-function main(): void {
+import { WebSocketServer, type WebSocket } from "ws";
+
+import { FakeAgent } from "./fake-agent.js";
+import {
+  createEvent,
+  isApprovalResponse,
+  parseMessage,
+  type ConnectionPayload,
+  type Envelope,
+  type ErrorPayload,
+} from "./protocol.js";
+
+// Localhost only. Bridge tidak boleh terjangkau dari jaringan luar.
+const HOST = "127.0.0.1";
+const PORT = 8787;
+
+const server = new WebSocketServer({ host: HOST, port: PORT });
+
+server.on("listening", () => {
   console.log("AI Agent Remote Bridge");
   console.log("Status: running");
-}
+  console.log(`WebSocket: ws://${HOST}:${PORT}`);
+});
 
-main();
+server.on("error", (error: Error) => {
+  console.error(`[bridge] server error: ${error.message}`);
+});
+
+server.on("connection", (socket: WebSocket) => {
+  console.log("[bridge] client connected");
+
+  const send = (event: Envelope): void => {
+    if (socket.readyState !== socket.OPEN) return;
+    socket.send(JSON.stringify(event));
+    console.log(`[bridge] -> ${event.type}`);
+  };
+
+  const sendError = (message: string): void => {
+    send(createEvent<ErrorPayload>("error", { message }));
+  };
+
+  send(createEvent<ConnectionPayload>("connection", { status: "connected" }));
+
+  const agent = new FakeAgent(send);
+  agent.run().catch((error: Error) => {
+    console.log(`[bridge] agent stopped: ${error.message}`);
+  });
+
+  socket.on("message", (data) => {
+    // Message dari client tidak dipercaya: apa pun isinya, bridge harus tetap hidup.
+    try {
+      const result = parseMessage(data.toString());
+      if (!result.ok) {
+        console.log(`[bridge] invalid message: ${result.error}`);
+        sendError(result.error);
+        return;
+      }
+
+      const event = result.event;
+      console.log(`[bridge] <- ${event.type}`);
+
+      if (event.type !== "approval_response") {
+        sendError(`unsupported event type from client: ${event.type}`);
+        return;
+      }
+      if (!isApprovalResponse(event)) {
+        sendError("approval_response requires payload.requestId and payload.approved");
+        return;
+      }
+
+      const outcome = agent.handleApprovalResponse(event);
+      if (!outcome.ok) {
+        sendError(outcome.error);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[bridge] failed to handle message: ${message}`);
+      sendError("failed to handle message");
+    }
+  });
+
+  socket.on("error", (error: Error) => {
+    console.error(`[bridge] socket error: ${error.message}`);
+  });
+
+  socket.on("close", () => {
+    agent.cancel();
+    console.log("[bridge] client disconnected");
+  });
+});
