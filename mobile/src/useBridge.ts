@@ -1,20 +1,23 @@
 /**
  * Koneksi WebSocket ke Local Bridge.
  *
- * V0.1.2-B.1 bersifat read-only: app hanya menerima dan menampilkan. Tidak ada
- * message yang dikirim ke bridge, jadi app tidak bisa mengubah state agent.
+ * V0.1.3: app boleh menjawab approval. Satu-satunya message yang dikirim app
+ * adalah `approval_response` — tidak ada yang lain.
  *
- * Client bukan source of truth: yang dipegang di sini hanya connection state
- * dan salinan terakhir dari state_snapshot milik bridge.
+ * Client tetap bukan source of truth. App tidak pernah menebak hasil approval;
+ * status baru berubah setelah bridge mengirim state_snapshot. Yang disimpan
+ * lokal hanya connection state dan penanda "sedang mengirim".
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { BRIDGE_URL } from "./config";
 import {
+  createEvent,
   parseMessage,
   type AgentOutputPayload,
   type AgentState,
+  type ApprovalResponsePayload,
   type ConnectionState,
   type ErrorPayload,
 } from "./protocol";
@@ -27,13 +30,21 @@ export interface LogEntry {
   text: string;
 }
 
+/** Approval yang sudah dikirim tapi belum dikonfirmasi bridge. */
+export interface Submission {
+  requestId: string;
+  approved: boolean;
+}
+
 export interface Bridge {
   url: string;
   connectionState: ConnectionState;
   agentState: AgentState | null;
   log: LogEntry[];
+  submission: Submission | null;
   connect: () => void;
   disconnect: () => void;
+  respond: (approved: boolean) => void;
 }
 
 export function useBridge(): Bridge {
@@ -41,9 +52,18 @@ export function useBridge(): Bridge {
     useState<ConnectionState>("DISCONNECTED");
   const [agentState, setAgentState] = useState<AgentState | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
+  const [submission, setSubmission] = useState<Submission | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
   const logSequence = useRef(0);
+  // Handler WebSocket hidup di luar render, jadi butuh ref supaya tidak membaca
+  // nilai basi saat memutuskan kapan "Sending..." selesai.
+  const submissionRef = useRef<Submission | null>(null);
+
+  const trackSubmission = useCallback((next: Submission | null) => {
+    submissionRef.current = next;
+    setSubmission(next);
+  }, []);
 
   const append = useCallback((kind: LogKind, text: string) => {
     logSequence.current += 1;
@@ -86,6 +106,9 @@ export function useBridge(): Bridge {
     socket.onclose = (event: { code?: number; reason?: string }) => {
       if (socketRef.current === socket) socketRef.current = null;
       setConnectionState("DISCONNECTED");
+      // Kiriman yang menggantung dianggap batal, supaya setelah reconnect
+      // tombolnya hidup lagi kalau approval-nya memang masih PENDING.
+      trackSubmission(null);
 
       const code = event?.code ?? 0;
       const reason = event?.reason ? ` ${event.reason}` : "";
@@ -117,17 +140,35 @@ export function useBridge(): Bridge {
           append("system", "Connected.");
           break;
 
-        case "state_snapshot":
-          setAgentState(result.event.payload as AgentState);
+        case "state_snapshot": {
+          const state = result.event.payload as AgentState;
+          setAgentState(state);
+
+          // Bridge sudah memutuskan: approval bukan PENDING lagi, atau sudah
+          // berpindah ke request lain. Kiriman kita selesai.
+          const pending = submissionRef.current;
+          if (
+            pending &&
+            (state.approval.status !== "PENDING" ||
+              state.approval.requestId !== pending.requestId)
+          ) {
+            trackSubmission(null);
+          }
           break;
+        }
 
         case "agent_output":
           append("agent", (result.event.payload as AgentOutputPayload).text);
           break;
 
-        case "error":
-          append("error", (result.event.payload as ErrorPayload).message);
+        case "error": {
+          const { message } = result.event.payload as ErrorPayload;
+          append("error", message);
+          // Bridge menolak. Lepas kuncinya supaya user bisa mencoba lagi
+          // selama approval-nya masih PENDING.
+          if (submissionRef.current) trackSubmission(null);
           break;
+        }
 
         // approval_request tidak perlu ditangani terpisah: approval yang
         // menunggu selalu ada di state_snapshot, termasuk saat reconnect.
@@ -135,7 +176,42 @@ export function useBridge(): Bridge {
           break;
       }
     };
-  }, [append]);
+  }, [append, trackSubmission]);
+
+  const respond = useCallback(
+    (approved: boolean) => {
+      const approval = agentState?.approval;
+      if (approval?.status !== "PENDING" || !approval.requestId) return;
+      // Kunci double submit.
+      if (submissionRef.current) return;
+
+      const socket = socketRef.current;
+      if (!socket || socket.readyState !== 1) {
+        append("error", "Belum terhubung ke bridge. Connect dulu.");
+        return;
+      }
+
+      const requestId = approval.requestId;
+      const event = createEvent<ApprovalResponsePayload>(
+        "approval_response",
+        { requestId, approved },
+        "res",
+      );
+
+      trackSubmission({ requestId, approved });
+      try {
+        socket.send(JSON.stringify(event));
+        console.log(`[bridge] sent approval_response ${requestId}=${approved}`);
+        append("system", approved ? "Sending approval..." : "Sending denial...");
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.log(`[bridge] send failed: ${detail}`);
+        append("error", `Gagal mengirim: ${detail}`);
+        trackSubmission(null);
+      }
+    },
+    [agentState, append, trackSubmission],
+  );
 
   // Connect sekali saat app dibuka; setelah itu manual lewat tombol.
   useEffect(() => {
@@ -152,7 +228,9 @@ export function useBridge(): Bridge {
     connectionState,
     agentState,
     log,
+    submission,
     connect,
     disconnect,
+    respond,
   };
 }

@@ -2,11 +2,12 @@
 
 Android app (Expo + React Native, TypeScript) sebagai remote untuk Local Bridge.
 
-Milestone: **V0.1.2-B.2 — Wireless LAN Connectivity**.
+Milestone: **V0.1.3 — Mobile Approval Control**.
 
-App tetap **read-only** seperti V0.1.2-B.1. App hanya connect, menerima, dan
-menampilkan. App tidak pernah mengirim message apa pun ke bridge, jadi tidak
-bisa mengubah state agent.
+App sekarang bisa **menjawab approval**. Satu-satunya message yang dikirim app
+adalah `approval_response`; tidak ada yang lain. Bridge tetap source of truth —
+app tidak pernah menebak hasilnya, status baru berubah setelah bridge mengirim
+`state_snapshot`.
 
 Koneksi lewat **Wi-Fi / LAN**. Tidak ada USB, `adb reverse`, atau Android Studio.
 
@@ -15,8 +16,9 @@ Koneksi lewat **Wi-Fi / LAN**. Tidak ada USB, `adb reverse`, atau Android Studio
 - Connection state (`DISCONNECTED` / `CONNECTING` / `CONNECTED`) — satu-satunya
   state milik client.
 - Agent state + approval state dari `state_snapshot` milik bridge.
-- Saat approval menunggu: panel **Approval / Pending** beserta pesannya, tanpa
-  tombol. Approval dijawab lewat test client di laptop (`bridge/npm run client`).
+- Saat approval menunggu: panel **⚠️ APPROVAL REQUIRED** beserta pesannya dan
+  tombol **❌ NO** / **✅ YES**. Tombol hanya hidup ketika approval `PENDING`,
+  koneksi hidup, dan tidak ada kiriman yang sedang berjalan.
 - Log `agent_output` dan `error`.
 - Tombol Connect / Disconnect manual.
 

@@ -1,28 +1,27 @@
 /**
- * Smoke test read-only: modul protocol milik app diadu dengan bridge asli.
+ * Smoke test: modul protocol milik app diadu dengan bridge asli.
  *
- * Bukan pengganti test di device — ini hanya membuktikan jalur bacanya benar:
- * event dari bridge bisa di-parse oleh kode app, dan approval yang menunggu
- * terbaca lengkap dari state_snapshot.
+ * Bukan pengganti test di device — ini membuktikan jalur datanya benar dua arah:
+ * event dari bridge bisa di-parse kode app, dan approval_response yang dibentuk
+ * kode app (envelope dari createEvent) diterima bridge.
  *
- * Sesuai milestone V0.1.2-B.1, test ini tidak pernah mengirim apa pun ke
- * bridge, jadi state agent tidak tersentuh.
- *
- * Butuh bridge jalan lebih dulu:
+ * Butuh bridge jalan lebih dulu, dan bridge yang FRESH karena Fake Agent hanya
+ * jalan sekali per proses:
  *   cd bridge && npm run dev
  *   cd mobile && npm run smoke
  *
  * Dijalankan Node langsung (type stripping), jadi tidak menambah dependency.
  */
 
+import { BRIDGE_URL } from "./config.ts";
 import {
+  createEvent,
   parseMessage,
   type AgentState,
   type AgentOutputPayload,
+  type ApprovalResponsePayload,
   type Envelope,
 } from "./protocol.ts";
-
-import { BRIDGE_URL } from "./config.ts";
 
 let failures = 0;
 
@@ -49,6 +48,11 @@ const outputs = (): string[] =>
     .filter((event) => event.type === "agent_output")
     .map((event) => (event.payload as AgentOutputPayload).text);
 
+const errors = (): string[] =>
+  events
+    .filter((event) => event.type === "error")
+    .map((event) => (event.payload as { message: string }).message);
+
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -62,6 +66,19 @@ async function waitFor(
     if (Date.now() > deadline) throw new Error(`timeout waiting for ${label}`);
     await delay(25);
   }
+}
+
+/** Persis cara app membentuk jawabannya. */
+function sendApproval(requestId: string, approved: boolean): void {
+  socket.send(
+    JSON.stringify(
+      createEvent<ApprovalResponsePayload>(
+        "approval_response",
+        { requestId, approved },
+        "res",
+      ),
+    ),
+  );
 }
 
 socket.addEventListener("message", (event: MessageEvent) => {
@@ -87,65 +104,43 @@ socket.addEventListener("open", () => {
 });
 
 async function run(): Promise<void> {
-  console.log("\nAI Agent Remote mobile — protocol smoke test (read-only)\n");
+  console.log("\nAI Agent Remote mobile — protocol smoke test\n");
 
   console.log("Menerima event dari bridge");
   await waitFor("connection + snapshot", () => events.length >= 2);
-  check(
-    "event pertama = connection",
-    events[0]?.type === "connection",
-    events[0]?.type,
-  );
-  check(
-    "event kedua = state_snapshot",
-    events[1]?.type === "state_snapshot",
-    events[1]?.type,
-  );
-
-  const initial = lastSnapshot();
-  check("snapshot punya agentId", initial?.agentId === "fake-agent", initial?.agentId);
-  check("agentState terbaca", typeof initial?.agentState === "string", initial?.agentState);
-
-  console.log("\nMembaca agent_output");
-  await waitFor("agent_output", () => outputs().length > 0);
-  check("agent_output terbaca", outputs().length > 0, `${outputs().length} output`);
+  check("event pertama = connection", events[0]?.type === "connection", events[0]?.type);
+  check("event kedua = state_snapshot", events[1]?.type === "state_snapshot", events[1]?.type);
+  check("snapshot punya agentId", lastSnapshot()?.agentId === "fake-agent");
 
   console.log("\nMembaca approval yang menunggu");
-  await waitFor(
-    "approval PENDING",
-    () => lastSnapshot()?.approval.status === "PENDING",
-  );
+  await waitFor("approval PENDING", () => lastSnapshot()?.approval.status === "PENDING");
   const pending = lastSnapshot();
-  check(
-    "agentState = WAITING_APPROVAL",
-    pending?.agentState === "WAITING_APPROVAL",
-    pending?.agentState,
-  );
-  check(
-    "approval.status = PENDING",
-    pending?.approval.status === "PENDING",
-    pending?.approval.status,
-  );
-  check(
-    "message terbaca dari snapshot",
-    (pending?.approval.message ?? "").length > 0,
-  );
-  check(
-    "requestId terbaca dari snapshot",
-    (pending?.approval.requestId ?? "").length > 0,
-  );
+  const requestId = pending?.approval.requestId ?? "";
+  check("agentState = WAITING_APPROVAL", pending?.agentState === "WAITING_APPROVAL", pending?.agentState);
+  check("requestId terbaca dari snapshot", requestId.length > 0);
+  check("message terbaca dari snapshot", (pending?.approval.message ?? "").length > 0);
 
-  console.log("\nMemastikan tidak ada yang dikirim ke bridge");
-  await delay(1000);
+  console.log("\nrequestId salah harus ditolak, state tidak berubah");
+  sendApproval("req-not-real", true);
+  await waitFor("error", () => errors().length > 0);
+  check("bridge membalas error", errors().at(-1)?.includes("unknown requestId") === true, errors().at(-1));
+  await delay(200);
+  check("approval tetap PENDING", lastSnapshot()?.approval.status === "PENDING");
+
+  console.log("\nMengirim approval_response yang dibentuk kode app");
+  const outputsBefore = outputs().length;
+  sendApproval(requestId, true);
+
+  await waitFor("agent lanjut", () => outputs().length > outputsBefore);
   check(
-    "approval tetap PENDING (app tidak mengubah state)",
-    lastSnapshot()?.approval.status === "PENDING",
-    lastSnapshot()?.approval.status,
+    "envelope buatan app diterima bridge",
+    outputs().at(-1) === "Approval received. Continuing...",
+    outputs().at(-1),
   );
-  check(
-    "tidak ada error event dari bridge",
-    events.every((event) => event.type !== "error"),
-  );
+  check("approval jadi APPROVED", lastSnapshot()?.approval.status === "APPROVED", lastSnapshot()?.approval.status);
+
+  await waitFor("agent selesai", () => lastSnapshot()?.agentState === "IDLE");
+  check("agent kembali IDLE", lastSnapshot()?.agentState === "IDLE");
 
   socket.close();
   console.log(

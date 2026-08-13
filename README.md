@@ -39,12 +39,14 @@ ai-agent-remote/
 │   │   ├── protocol.ts      # Tipe envelope/state + parsing/validasi
 │   │   ├── fake-agent.ts    # Simulasi agent (state + approval flow)
 │   │   ├── client.ts        # Test client terminal
-│   │   └── state.test.ts    # Test state & reconnect
+│   │   ├── config.test.ts   # Test BRIDGE_HOST / BRIDGE_PORT
+│   │   ├── state.test.ts    # Test state & reconnect
+│   │   └── approval.test.ts # Test approval_response
 │   ├── package.json
 │   └── tsconfig.json
 │
 ├── mobile/                  # Android app (Expo + React Native)
-│   ├── App.tsx              # UI read-only
+│   ├── App.tsx              # UI + kontrol approval
 │   ├── src/
 │   │   ├── config.ts        # Bridge URL tetap
 │   │   ├── protocol.ts      # Protocol parsing (duplikat dari bridge)
@@ -87,7 +89,7 @@ Default-nya loopback. Untuk agar HP bisa menjangkaunya lewat Wi-Fi, lihat
 | `npm run dev` | Jalankan bridge dari source dengan auto-reload (tsx watch) |
 | `npm start` | Jalankan bridge sekali dari source, tanpa watch |
 | `npm run client` | Jalankan test client (butuh bridge yang sudah jalan) |
-| `npm test` | Test config + state & reconnect (start bridge sendiri di port 8788) |
+| `npm test` | Test config, state & reconnect, dan approval_response |
 | `npm run build` | Compile TypeScript ke `dist/` |
 | `npm run serve` | Jalankan hasil build (`node dist/index.js`) |
 | `npm run typecheck` | Type check tanpa emit |
@@ -341,6 +343,9 @@ Milestone ini **read-only**: app hanya menerima dan menampilkan. App tidak
 mengirim message apa pun, jadi tidak bisa mengubah state agent. Approval tetap
 dijawab lewat test client di laptop.
 
+> Bagian read-only ini digantikan V0.1.3 di bawah, di mana app mulai boleh
+> menjawab approval.
+
 Cara HP menjangkau bridge dibahas di V0.1.2-B.2 di bawah. Detail app:
 [`mobile/README.md`](mobile/README.md).
 
@@ -487,3 +492,55 @@ yang connect ke `ws://<IP-LAN-laptop>:8787` — itu membuktikan bridge menerima
 koneksi lewat alamat LAN, bukan membuktikan HP sungguhan bisa menembus jaringan.
 
 Langkah berikutnya: test dari HP Android fisik di Wi-Fi yang sama.
+
+---
+
+## V0.1.3 — Mobile Approval Control
+
+App berubah dari read-only menjadi **approval controller**. HP sekarang bisa
+menjawab permintaan izin dari agent.
+
+```text
+Fake Agent → Bridge → approval_request / state_snapshot → Android
+                                                            ↓
+                                                     user pilih YES / NO
+                                                            ↓
+Fake Agent ← Bridge ←──────────── approval_response ────────┘
+```
+
+### Yang berubah
+
+- App mengirim `approval_response` — **satu-satunya** message yang dikirim app.
+- UI approval jadi interaktif: panel `⚠️ APPROVAL REQUIRED` dengan tombol
+  `❌ NO` / `✅ YES`.
+- Tombol hidup hanya ketika `approval.status === "PENDING"`, koneksi hidup, dan
+  tidak ada kiriman yang sedang berjalan.
+- Setelah ditekan: kedua tombol mati, muncul `Sending approval…` / `Sending
+  denial…`, dan double submit terkunci.
+
+### Tidak ada perubahan protocol
+
+`approval_response` sudah ada sejak V0.1.1 dan envelope-nya tidak berubah:
+
+```json
+{
+  "type": "approval_response",
+  "id": "res-1",
+  "timestamp": "2026-08-13T10:00:05.000Z",
+  "payload": { "requestId": "req-7", "approved": true }
+}
+```
+
+### Bridge tetap source of truth
+
+App **tidak** mengubah state secara optimistik. Setelah mengirim, app hanya
+menampilkan "Sending…" dan menunggu; status baru berubah ketika bridge
+mengirim `state_snapshot` berikutnya.
+
+Kalau bridge menolak (mis. `requestId` sudah tidak `PENDING`), event `error`
+membuka kunci tombol lagi supaya user bisa mencoba ulang selama approval masih
+menunggu.
+
+Approval yang sudah `PENDING` sebelum app disconnect tetap bisa dijawab setelah
+reconnect, karena promptnya dibangun dari `state_snapshot`, bukan dari event
+`approval_request` yang mungkin sudah lewat.

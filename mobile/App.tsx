@@ -48,6 +48,10 @@ export default function App() {
   const connected = bridge.connectionState === "CONNECTED";
   const approval = bridge.agentState?.approval;
   const approvalPending = approval?.status === "PENDING";
+  const sending = bridge.submission !== null;
+  // Tombol hidup hanya kalau memang ada approval menunggu, kita terhubung, dan
+  // belum ada kiriman yang sedang berjalan.
+  const canRespond = approvalPending && connected && !sending;
 
   return (
     <View style={styles.screen}>
@@ -108,14 +112,49 @@ export default function App() {
 
       {approvalPending ? (
         <View style={[styles.card, styles.approvalCard]}>
-          <Text style={styles.label}>Approval</Text>
-          <Text style={styles.approvalStatus}>Pending</Text>
-          {approval?.message ? (
-            <Text style={styles.approvalText}>{approval.message}</Text>
-          ) : null}
-          <Text style={styles.muted}>
-            Read-only. Jawab approval lewat test client di laptop.
+          <Text style={styles.approvalHeading}>⚠️ APPROVAL REQUIRED</Text>
+          <Text style={styles.approvalText}>
+            {approval?.message ?? "Approval required."}
           </Text>
+
+          {sending ? (
+            <Text style={styles.sending}>
+              {bridge.submission?.approved ? "Sending approval…" : "Sending denial…"}
+            </Text>
+          ) : null}
+
+          <View style={styles.stateRow}>
+            <Pressable
+              disabled={!canRespond}
+              style={({ pressed }) => [
+                styles.button,
+                styles.rowButton,
+                styles.no,
+                pressed && styles.pressed,
+                !canRespond && styles.disabled,
+              ]}
+              onPress={() => bridge.respond(false)}
+            >
+              <Text style={styles.buttonText}>❌ NO</Text>
+            </Pressable>
+            <Pressable
+              disabled={!canRespond}
+              style={({ pressed }) => [
+                styles.button,
+                styles.rowButton,
+                styles.yes,
+                pressed && styles.pressed,
+                !canRespond && styles.disabled,
+              ]}
+              onPress={() => bridge.respond(true)}
+            >
+              <Text style={styles.buttonText}>✅ YES</Text>
+            </Pressable>
+          </View>
+
+          {!connected && !sending ? (
+            <Text style={styles.muted}>Perlu terhubung untuk menjawab.</Text>
+          ) : null}
         </View>
       ) : null}
 
@@ -170,14 +209,32 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "#a06a00",
   },
-  approvalStatus: {
-    fontSize: 18,
-    fontWeight: "700",
+  approvalHeading: {
+    fontSize: 15,
+    fontWeight: "800",
     color: "#a06a00",
+    letterSpacing: 0.5,
   },
   approvalText: {
     fontSize: 16,
     color: "#111418",
+  },
+  sending: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#5a6169",
+  },
+  disabled: {
+    opacity: 0.4,
+  },
+  rowButton: {
+    flex: 1,
+  },
+  yes: {
+    backgroundColor: "#1a7f4b",
+  },
+  no: {
+    backgroundColor: "#9b2226",
   },
   label: {
     fontSize: 12,

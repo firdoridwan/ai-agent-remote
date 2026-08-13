@@ -8,9 +8,8 @@
  * perlu setup monorepo dulu. Kalau protocol berubah, dua file ini harus ikut
  * berubah bersamaan.
  *
- * V0.1.2-B.1 read-only: hanya parsing. Pembuat event (createEvent) sengaja
- * tidak ada di sini supaya app tidak punya cara mengirim apa pun ke bridge.
- * Tipenya tetap lengkap sebagai dokumentasi protocol.
+ * V0.1.3: app boleh mengirim approval_response, jadi createEvent hadir lagi.
+ * Envelope-nya sama persis dengan V0.1 — tidak ada format baru.
  */
 
 export const EVENT_TYPES = [
@@ -68,6 +67,22 @@ export interface ApprovalResponsePayload {
 
 export interface ErrorPayload {
   message: string;
+}
+
+let sequence = 0;
+
+export function createEvent<TPayload>(
+  type: EventType,
+  payload: TPayload,
+  idPrefix = "evt",
+): Envelope<TPayload> {
+  sequence += 1;
+  return {
+    type,
+    id: `${idPrefix}-${sequence}`,
+    timestamp: new Date().toISOString(),
+    payload,
+  };
 }
 
 export type ParseResult =
