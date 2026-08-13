@@ -69,20 +69,38 @@ export function useBridge(): Bridge {
 
     socket.onopen = () => {
       setConnectionState("CONNECTED");
+      console.log(`[bridge] open ${BRIDGE_URL}`);
     };
 
-    socket.onerror = () => {
-      // RN tidak memberi detail error yang berguna di sini.
-      append(
-        "error",
-        "Connection error. Bridge jalan dengan BRIDGE_HOST=0.0.0.0? Wi-Fi sama?",
-      );
+    // Detail error di RN tipis, jadi apa pun yang ada kita tampilkan apa adanya
+    // supaya kegagalan tidak berhenti di kata "DISCONNECTED".
+    socket.onerror = (event: Event) => {
+      const detail =
+        (event as Event & { message?: string }).message ??
+        "no detail from platform";
+      console.log(`[bridge] error: ${detail}`);
+      append("error", `Connection error: ${detail}`);
+      append("system", `Target: ${BRIDGE_URL}`);
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event: { code?: number; reason?: string }) => {
       if (socketRef.current === socket) socketRef.current = null;
       setConnectionState("DISCONNECTED");
-      append("system", "Disconnected.");
+
+      const code = event?.code ?? 0;
+      const reason = event?.reason ? ` ${event.reason}` : "";
+      console.log(`[bridge] close ${code}${reason}`);
+      append("system", `Disconnected (code ${code}${reason}).`);
+
+      // 1006 = tertutup tanpa close frame: gagal sebelum handshake selesai.
+      // Penyebab paling umum: alamat salah, bridge belum jalan / masih bind ke
+      // loopback, beda jaringan, atau cleartext diblokir Android.
+      if (code === 1006) {
+        append(
+          "error",
+          "Tidak sampai ke bridge. Cek: BRIDGE_HOST=0.0.0.0, Wi-Fi yang sama, IP benar.",
+        );
+      }
     };
 
     socket.onmessage = (event: { data: unknown }) => {
